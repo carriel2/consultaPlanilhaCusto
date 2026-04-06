@@ -11,13 +11,12 @@ via Google Sheets e popular um Dashboard no Grafana.
 ## Rodando com Docker
 ```bash
 docker-compose up -d --build
+```
 
 ---
 
-### 3. Criar um `.env.example`
-Como o seu `.env` real não vai para o Git, você deixa um "esqueleto" para saber quais chaves são necessárias.
+## Env Exemplo
 
-```text
 SESSION_TOKEN=
 APPID=cluster
 DB_HOST=
