@@ -1,0 +1,8 @@
+# Credenciais e Segredos
+.env
+google_credentials.json
+
+# Python
+__pycache__/
+venv/
+*.py[cod]
