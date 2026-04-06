@@ -17,6 +17,7 @@ docker-compose up -d --build
 
 ## Env Exemplo
 
+```bash
 SESSION_TOKEN=
 APPID=cluster
 DB_HOST=
@@ -24,3 +25,4 @@ DB_NAME=
 DB_USER=
 DB_PASSWORD=
 GOOGLE_SHEET_ID=
+```
