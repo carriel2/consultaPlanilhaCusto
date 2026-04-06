@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  sync-billing:
+    build: .
+    container_name: jelastic_sync_bot
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      # Persistência dos logs: a pasta 'logs' do container fica na tua máquina/servidor
+      - ./logs:/app/logs
+      # IMPORTANTE: Como o Git ignora o JSON, montamos ele como volume
+      - ./google_credentials.json:/app/google_credentials.json
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10mb"
+        max-file: "3"
+
+networks:
+  default:
+    name: jelastic_network

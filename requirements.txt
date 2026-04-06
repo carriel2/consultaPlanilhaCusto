@@ -5,3 +5,4 @@ psycopg2-binary==2.9.9
 python-dotenv==1.0.1
 gspread==6.0.0
 google-auth==2.27.0
+schedule==1.1.0
