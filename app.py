@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 import logging
 import schedule
 import time
+import re
 
 load_dotenv()
 
@@ -46,15 +47,17 @@ def init_db():
         CREATE TABLE IF NOT EXISTS clientes_planilha (
             uid INTEGER PRIMARY KEY,
             nome_cliente VARCHAR(255),
-            data_conversao TIMESTAMP
+            data_conversao TIMESTAMP,
+            data_expiracao TIMESTAMP
         )
     ''')
-    # Tabela 2: Faturamento Diário (Time Series)
+    # Tabela 2: Faturamento Diário (Dividido em Real e Bônus)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS consumo_diario_grafana (
             uid INTEGER,
             data_consumo DATE,
-            custo NUMERIC(10, 4),
+            custo_real NUMERIC(10, 4) DEFAULT 0,
+            custo_bonus NUMERIC(10, 4) DEFAULT 0,
             PRIMARY KEY (uid, data_consumo)
         )
     ''')
@@ -165,6 +168,9 @@ def processar_google_sheets(planilha_key):
             df.columns = df.columns.str.strip()
             if 'DATA DE CONVERSÃO' in df.columns:
                 df.rename(columns={'DATA DE CONVERSÃO': 'DATA_CONVERSAO'}, inplace=True)
+            
+            if 'DATA DE EXPIRAÇÃO' in df.columns:
+                df.rename(columns={'DATA DE EXPIRAÇÃO': 'DATA_EXPIRACAO'}, inplace=True)
 
             if 'ID' not in df.columns:
                 logging.warning(f"⚠️ Coluna 'ID' não encontrada na aba '{titulo_aba}'. Pulando...")
@@ -186,27 +192,52 @@ def processar_google_sheets(planilha_key):
                     if not data_conv:
                         continue
                 else:
-                    data_conv = pd.to_datetime(data_planilha, dayfirst=True)
+                    # 🧹 FAXINA: Remove caracteres invisíveis da data de conversão
+                    clean_conv = re.sub(r'[^\x00-\x7F]+', '', str(data_planilha)).strip()
+                    data_conv = pd.to_datetime(clean_conv, dayfirst=True)
                 
+                # 💡 NOVA LÓGICA: PEGANDO A EXPIRAÇÃO DO BÔNUS COM FAXINA
+                data_exp_planilha = row.get('DATA_EXPIRACAO')
+                data_expiracao = None
+                if pd.notna(data_exp_planilha) and str(data_exp_planilha).strip() != '':
+                    # 🧹 FAXINA: Remove caracteres invisíveis da data de expiração
+                    clean_exp = re.sub(r'[^\x00-\x7F]+', '', str(data_exp_planilha)).strip()
+                    data_expiracao = pd.to_datetime(clean_exp, dayfirst=True)
+
                 logging.info(f"💸 Agrupando consumo de {nome} (ID: {uid})...")
                 
                 consumos_diarios = consultar_consumo_api(uid, data_conv)
                 
+                # Inserindo o cliente com a nova data_expiracao
                 cursor.execute('''
-                    INSERT INTO clientes_planilha (uid, nome_cliente, data_conversao)
-                    VALUES (%s, %s, %s)
+                    INSERT INTO clientes_planilha (uid, nome_cliente, data_conversao, data_expiracao)
+                    VALUES (%s, %s, %s, %s)
                     ON CONFLICT (uid) DO UPDATE SET
                         nome_cliente = EXCLUDED.nome_cliente,
-                        data_conversao = EXCLUDED.data_conversao;
-                ''', (uid, nome, data_conv))
+                        data_conversao = EXCLUDED.data_conversao,
+                        data_expiracao = EXCLUDED.data_expiracao;
+                ''', (uid, nome, data_conv, data_expiracao))
 
+                # Processando e bifurcando o dinheiro (Bônus vs Real)
                 for data_dia, custo in consumos_diarios:
+                    data_dia_obj = pd.to_datetime(data_dia)
+                    
+                    custo_real = 0.0
+                    custo_bonus = 0.0
+                    
+                    # Se o cliente tem data limite E o consumo aconteceu antes ou no dia da expiração
+                    if data_expiracao is not None and data_dia_obj <= data_expiracao:
+                        custo_bonus = custo
+                    else:
+                        custo_real = custo
+
                     cursor.execute('''
-                        INSERT INTO consumo_diario_grafana (uid, data_consumo, custo)
-                        VALUES (%s, %s, %s)
+                        INSERT INTO consumo_diario_grafana (uid, data_consumo, custo_real, custo_bonus)
+                        VALUES (%s, %s, %s, %s)
                         ON CONFLICT (uid, data_consumo) DO UPDATE SET
-                            custo = EXCLUDED.custo;
-                    ''', (uid, data_dia, custo))
+                            custo_real = EXCLUDED.custo_real,
+                            custo_bonus = EXCLUDED.custo_bonus;
+                    ''', (uid, data_dia, custo_real, custo_bonus))
 
         conn.commit()
         cursor.close()
@@ -228,15 +259,9 @@ def job():
     processar_google_sheets(ID_DA_PLANILHA)
 
 if __name__ == "__main__":
-    # Roda uma vez assim que o container ligar para garantir que está tudo certo
     job()
-    
-    # Programa para rodar todos os dias às 07:00 da manhã
     schedule.every().day.at("07:00").do(job)
-    
     logging.info("🚀 Serviço de Sincronização em Docker ativo! Aguardando o horário agendado (07:00)...")
-    
-    # Loop infinito que mantém o container vivo e verifica o horário
     while True:
         schedule.run_pending()
         time.sleep(60)
