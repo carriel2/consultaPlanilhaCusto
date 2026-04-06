@@ -206,5 +206,5 @@ def processar_google_sheets(planilha_key):
     print("\n✅ Todas as abas foram processadas com sucesso!")
 
 if __name__ == "__main__":
-    ID_DA_PLANILHA = "16P6jS_yVGBqEaY6XK9U9b0Fu64pTuepcIWTmc2OYj5Y"
+    ID_DA_PLANILHA = os.getenv("GOOGLE_SHEET_ID")
     processar_google_sheets(ID_DA_PLANILHA)
