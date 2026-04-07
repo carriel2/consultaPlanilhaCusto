@@ -42,7 +42,7 @@ def get_db_connection():
 def init_db():
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Tabela 1: Cadastro do Cliente
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS clientes_planilha (
             uid INTEGER PRIMARY KEY,
@@ -51,7 +51,7 @@ def init_db():
             data_expiracao TIMESTAMP
         )
     ''')
-    # Tabela 2: Faturamento Diário (Dividido em Real e Bônus)
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS consumo_diario_grafana (
             uid INTEGER,
@@ -96,7 +96,7 @@ def descobrir_primeira_recarga(uid):
         logging.error(f"Erro ao buscar histórico de recarga para UID {uid}: {e}")
         return None
 
-def consultar_consumo_api(uid, data_inicio):
+def consultar_consumo_api(uid, data_inicio, max_tentativas=3):
     data_hoje = datetime.datetime.now().strftime("%Y-%m-%d 23:59:59")
     
     if isinstance(data_inicio, datetime.datetime) or type(data_inicio).__name__ == 'Timestamp':
@@ -113,26 +113,35 @@ def consultar_consumo_api(uid, data_inicio):
         'endtime': data_hoje
     }
 
-    try:
-        response = requests.get(URL_BILLING, params=params, timeout=30)
-        data = response.json()
-        
-        consumo_agrupado = {}
-        
-        if data.get('result') == 0 and 'array' in data:
-            for item in data['array']:
-                data_bruta = item.get('dateTime') 
-                custo = item.get('cost', 0.0)
-                
-                if data_bruta and custo > 0:
-                    data_dia = str(data_bruta).split(' ')[0]
-                    consumo_agrupado[data_dia] = consumo_agrupado.get(data_dia, 0.0) + custo
+    for tentativa in range(max_tentativas):
+        try:
+            response = requests.get(URL_BILLING, params=params, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            
+            consumo_agrupado = {}
+            
+            if data.get('result') == 0 and 'array' in data:
+                for item in data['array']:
+                    data_bruta = item.get('dateTime') 
+                    custo = item.get('cost', 0.0)
+                    
+                    if data_bruta and custo > 0:
+                        data_dia = str(data_bruta).split(' ')[0]
+                        consumo_agrupado[data_dia] = consumo_agrupado.get(data_dia, 0.0) + custo
 
-        return list(consumo_agrupado.items())
-    
-    except Exception as e:
-        logging.error(f"❌ Erro de conexão ao consultar consumo para UID {uid}: {e}")
-        return []
+            return list(consumo_agrupado.items())
+        
+        except requests.exceptions.Timeout:
+            logging.warning(f"⏳ Timeout na API (UID: {uid}). Tentativa {tentativa + 1} de {max_tentativas}. Esperando 5s...")
+            time.sleep(5)
+            
+        except Exception as e:
+            logging.error(f"❌ Erro de conexão ao consultar consumo (UID: {uid}): {e}")
+            break # 
+
+    logging.error(f"❌ Falha definitiva para UID {uid} após {max_tentativas} tentativas.")
+    return []
 
 def processar_google_sheets(planilha_key):
     try:
@@ -192,23 +201,21 @@ def processar_google_sheets(planilha_key):
                     if not data_conv:
                         continue
                 else:
-                    # 🧹 FAXINA: Remove caracteres invisíveis da data de conversão
+
                     clean_conv = re.sub(r'[^\x00-\x7F]+', '', str(data_planilha)).strip()
                     data_conv = pd.to_datetime(clean_conv, dayfirst=True)
                 
-                # 💡 NOVA LÓGICA: PEGANDO A EXPIRAÇÃO DO BÔNUS COM FAXINA
                 data_exp_planilha = row.get('DATA_EXPIRACAO')
                 data_expiracao = None
                 if pd.notna(data_exp_planilha) and str(data_exp_planilha).strip() != '':
-                    # 🧹 FAXINA: Remove caracteres invisíveis da data de expiração
+
                     clean_exp = re.sub(r'[^\x00-\x7F]+', '', str(data_exp_planilha)).strip()
                     data_expiracao = pd.to_datetime(clean_exp, dayfirst=True)
 
                 logging.info(f"💸 Agrupando consumo de {nome} (ID: {uid})...")
                 
                 consumos_diarios = consultar_consumo_api(uid, data_conv)
-                
-                # Inserindo o cliente com a nova data_expiracao
+
                 cursor.execute('''
                     INSERT INTO clientes_planilha (uid, nome_cliente, data_conversao, data_expiracao)
                     VALUES (%s, %s, %s, %s)
@@ -218,14 +225,12 @@ def processar_google_sheets(planilha_key):
                         data_expiracao = EXCLUDED.data_expiracao;
                 ''', (uid, nome, data_conv, data_expiracao))
 
-                # Processando e bifurcando o dinheiro (Bônus vs Real)
                 for data_dia, custo in consumos_diarios:
                     data_dia_obj = pd.to_datetime(data_dia)
                     
                     custo_real = 0.0
                     custo_bonus = 0.0
                     
-                    # Se o cliente tem data limite E o consumo aconteceu antes ou no dia da expiração
                     if data_expiracao is not None and data_dia_obj <= data_expiracao:
                         custo_bonus = custo
                     else:
@@ -247,9 +252,6 @@ def processar_google_sheets(planilha_key):
     except Exception as e:
         logging.error(f"❌ Erro fatal durante o processamento: {e}")
 
-# ==========================================
-# ⏱️ ROTINA DE AGENDAMENTO PARA O DOCKER
-# ==========================================
 def job():
     logging.info("🔔 Iniciando rotina matinal de sincronização...")
     ID_DA_PLANILHA = os.getenv("GOOGLE_SHEET_ID")
