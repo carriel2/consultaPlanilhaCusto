@@ -5,6 +5,7 @@ services:
     build: .
     container_name: jelastic_sync_bot
     restart: always
+    network_mode: "host"
     env_file:
       - .env
     volumes:
